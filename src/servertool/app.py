@@ -5,13 +5,26 @@ from pathlib import Path
 from typing import Optional, Sequence
 import sys
 
-from .config import Config
+from .shared.config import Config
 from .context import AppContext
 from .output import Console
-from .commands import disk, jobs, quickstart, request, status, testjob
+from .commands import configure, disk, jobs, quickstart, remote, request, run, runner, spec, status, testjob
 
 
 def _build_parser(context: AppContext) -> ArgumentParser:
+    help_topics = [
+        "status",
+        "jobs",
+        "disk",
+        "config",
+        "request",
+        "quickstart",
+        "test",
+        "spec",
+        "runner",
+        "remote",
+        "run",
+    ]
     parser = ArgumentParser(
         prog=context.config.name,
         description="Servertool is a Python CLI for Ubuntu cluster resource operations.",
@@ -20,6 +33,14 @@ def _build_parser(context: AppContext) -> ArgumentParser:
             "  servertool status\n"
             "  servertool jobs who\n"
             "  servertool disk update\n"
+            "  servertool config setup\n"
+            "  servertool remote doctor\n"
+            "  servertool remote cleanup RUN_ID --dry-run\n"
+            "  servertool spec init spec.json\n"
+            "  servertool run submit --dry-run spec.json\n"
+            "  servertool run cleanup RUN_ID --dry-run\n"
+            "  servertool runner prepare spec.json\n"
+            "  servertool runner notify --test you@example.com\n"
             "  servertool request guide\n"
             "  servertool request medium"
         ),
@@ -32,12 +53,21 @@ def _build_parser(context: AppContext) -> ArgumentParser:
     context.topic_parsers["status"] = status.register(subparsers)
     context.topic_parsers["jobs"] = jobs.register(subparsers)
     context.topic_parsers["disk"] = disk.register(subparsers)
+    context.topic_parsers["config"] = configure.register(subparsers)
     context.topic_parsers["request"] = request.register(subparsers)
     context.topic_parsers["quickstart"] = quickstart.register(subparsers)
     context.topic_parsers["test"] = testjob.register(subparsers)
+    context.topic_parsers["spec"] = spec.register(subparsers)
+    context.topic_parsers["runner"] = runner.register(subparsers)
+    context.topic_parsers["remote"] = remote.register(subparsers)
+    context.topic_parsers["run"] = run.register(subparsers)
 
     help_parser = subparsers.add_parser("help", help="Show help for a command")
-    help_parser.add_argument("topic", nargs="?", choices=["status", "jobs", "disk", "request", "quickstart", "test"])
+    help_parser.add_argument(
+        "topic",
+        nargs="?",
+        choices=help_topics,
+    )
     help_parser.set_defaults(func=_run_help)
 
     version_parser = subparsers.add_parser("version", help="Show version")

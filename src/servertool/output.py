@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from .config import Config
+from .shared.config import Config
 
 
 class Console:

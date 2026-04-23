@@ -1,104 +1,134 @@
 # Servertool
 
-`servertool` 是一个统一命令行工具，既保留原有集群运维命令，也支持 controller 到 runner 的远程训练工作流。
+`servertool` 是一个面向共享账号实验室场景的正式训练 CLI。
 
-**作者：** zanewang  
-**版本：** 3.0.0
+它围绕一条固定主流程工作：
 
-## 项目定位
-
-这个项目的核心目标是提供一个统一命令行入口，方便在共享集群环境中完成：
-
-- 集群与节点状态检查
-- GPU 资源申请
-- SLURM 作业查看与取消
-- 共享磁盘配额监控
-- 作业提交流程验证
-- 在控制端机器上生成和校验训练 spec
-- 把代码和数据同步到 Linux runner 服务器
-- 不手动 SSH 登录也能启动、查看和拉取远程训练结果
-
-仓库中已主动移除敏感部署信息。真实服务器地址、密码、内部认证地址、私有用户名等内容不应进入公开仓库，而应通过环境变量、部署脚本或本地未纳入版本控制的配置注入。
-
-当前仓库根目录 `servertool/` 就是正式项目根目录，Python 包位于 `src/servertool/`。部署相关配置应始终放在被忽略的本地配置中，而不是提交到源码仓库。
-
-## 快速开始
-
-开发环境安装：
-
-```bash
-python3 -m pip install -e .
+```text
+spec -> sync -> prepare -> launch -> monitor -> notify -> fetch
 ```
 
-然后先运行：
+当前目标运行环境：
+
+- controller：`macOS` 或 `Windows`
+- runner：`Linux`
+- 传输：`ssh + rsync`
+- 调度：`SLURM / sbatch`
+- 部署模型：管理员统一部署共享 runner，成员各自维护个人 workspace
+
+## 正式文档
+
+- 文档导航：`docs/README.md`
+- English overview: `README.md`
+- 实验室成员手册：`docs/member-guide.zh-CN.md`
+- 管理员手册：`docs/admin-guide.zh-CN.md`
+- 架构说明：`docs/architecture.zh-CN.md`
+- 贡献指南：`CONTRIBUTING.md`
+- 维护者说明书：`MAINTAINERS.md`
+- 版本记录：`CHANGELOG.md`
+- 示例资产：`examples/README.md`
+
+## 仓库结构
+
+- `src/servertool/`：源码
+- `tests/`：自动化测试
+- `docs/`：长期维护的正式文档
+- `examples/`：公开示例与配置模板
+- `.github/workflows/`：CI 与打包校验
+
+## 公开命令面
+
+当前正式公开命令只有下面这些：
 
 ```bash
-servertool help
-servertool status
-servertool request guide
-```
-
-首次使用集群流程时可运行：
-
-```bash
-servertool quickstart
-```
-
-如果要使用 controller/runner 训练流程，首次建议先执行：
-
-```bash
-servertool remote bootstrap
-servertool remote doctor
-servertool runner notify --test you@example.com
-```
-
-## 命令结构
-
-```bash
-servertool status [full|quick|gpu|jobs|network]
-servertool jobs [list|all|who|gpu|info|cancel]
-servertool disk [show|detail|update|auto]
-servertool config [setup|show|path]
-servertool request [guide|light|medium|heavy|a6000|custom]
-servertool quickstart
-servertool test [job|quick]
+servertool init
+servertool config [show|path]
+servertool doctor
 servertool spec [init|show|validate]
-servertool remote [doctor|install-runner|bootstrap|cleanup]
-servertool runner [prepare|start|status|tail|notify|finalize]
 servertool run [submit|status|logs|fetch|list|cleanup]
-servertool help [status|jobs|disk|config|request|quickstart|test]
+servertool admin [deploy|rollback|doctor|show-config]
+servertool help [init|config|doctor|spec|run|admin]
 servertool version
 ```
 
-## Controller / Runner 工作流
+内部的 `remote` 和 `runner` 命令仍然存在，但属于实现和维护接口，不再作为普通成员主文档的一部分。
 
-控制端命令的目标是让你不必为了同步物料和启动训练而手动 SSH 到集群里敲命令。
+## 快速开始
 
-### 1. 初始化远端 runner
+从仓库安装：
 
 ```bash
-servertool remote bootstrap
-servertool remote doctor
+python3 -m pip install .
+servertool version
+servertool help
 ```
 
-`remote bootstrap` 会在 Linux runner 上创建 `trainhub/.runner` 和 `~/.config/servertool`，上传 runner 包，并同步 runner 侧邮件配置。
-
-### 2. 创建训练 spec
+如果你在开发 `servertool` 本身，建议先升级 pip 再做 editable install：
 
 ```bash
-servertool spec init spec.json --project vision --run-name smoke
+python3 -m pip install --upgrade pip
+python3 -m pip install -e .
+```
+
+如果你暂时不想安装，也可以直接从源码运行：
+
+```bash
+python3 -m servertool version
+./servertool version
+```
+
+## 管理员流程
+
+先准备本地配置目录：
+
+```text
+~/.config/servertool/
+  lab.env
+  smtp.env
+  user.env
+```
+
+推荐管理员流程：
+
+```bash
+servertool admin show-config
+servertool admin deploy --dry-run
+servertool admin deploy
+servertool admin doctor
+```
+
+`admin deploy` 会完成：
+
+- 将共享 runner 发布到 `<shared_home>/trainhub/.runner/releases/<version>`
+- 更新 `.runner/current`
+- 上传共享 `lab.env`
+- 如存在则上传 `smtp.env`
+- 准备共享 `envs/`、`models/`、`cache/` 根目录
+- 验证当前 runner release 可用
+
+回滚方式：
+
+```bash
+servertool admin rollback 3.0.0 --dry-run
+servertool admin rollback 3.0.0
+```
+
+## 成员流程
+
+管理员分发 `lab.env` 后，普通成员只需要维护自己的 `user.env`。
+
+推荐首次使用流程：
+
+```bash
+servertool init
+servertool doctor
+servertool spec init spec.json --project my-project --run-name smoke
 servertool spec validate spec.json
-servertool spec show spec.json
-```
-
-### 3. 在控制端提交任务
-
-```bash
 servertool run submit spec.json --dry-run
 servertool run submit spec.json
 ```
 
-### 4. 查看日志与拉取结果
+运行中常用命令：
 
 ```bash
 servertool run status RUN_ID
@@ -106,181 +136,145 @@ servertool run logs RUN_ID
 servertool run logs RUN_ID --follow
 servertool run fetch RUN_ID
 servertool run list
-servertool run list --json
 servertool run cleanup RUN_ID --dry-run
-servertool run cleanup RUN_ID
 ```
 
-`run cleanup` 默认是保守的：它会清理远端 run 目录和本地 run record；只有当拉取目录位于默认 fetched cache 下时，才会自动一起删除。本命令默认拒绝删除非终态任务；确实需要强制清理时再使用 `--force`。如果只想清理本地或远端，可分别使用 `--local-only` 和 `--remote-only`。
+## Smoke 教程
 
-如果只想清理远端 runner 侧产物，可以使用：
+仓库自带一个可直接跟踪的 smoke spec：`spec.smoke.train.json`。
 
-```bash
-servertool remote cleanup RUN_ID --dry-run
-servertool remote cleanup RUN_ID
-```
-
-### 5. Runner 侧命令
-
-这些命令主要给 Linux runner 主机本地使用，或者由 controller 通过 SSH 远程调用：
-
-```bash
-servertool runner prepare SPEC_PATH
-servertool runner start RUN_ID
-servertool runner status RUN_ID
-servertool runner tail RUN_ID
-servertool runner notify RUN_ID
-servertool runner notify --test you@example.com
-```
-
-## 安全 Smoke Spec
-
-仓库里现在保留了两个 smoke spec：
-
-- `spec.smoke.json`：只打印一行 smoke 日志
-- `spec.smoke.train.json`：运行 `examples/smoke_train.py`，并写出 `outputs/metrics.jsonl`、`outputs/summary.json` 和 `ckpts/last.ckpt`
-
-更贴近训练流程的 smoke spec 仍然保持了很小的资源占用，适合做 controller/runner 端到端冒烟验证：
+在仓库根目录运行：
 
 ```bash
 servertool spec validate spec.smoke.train.json
 servertool run submit spec.smoke.train.json --dry-run
+servertool run submit spec.smoke.train.json
 ```
 
-## 常见流程
-
-### 1. 查看资源申请说明
+拿到返回的 `RUN_ID` 后继续：
 
 ```bash
-servertool request guide
+servertool run status RUN_ID
+servertool run logs RUN_ID --follow
+servertool run fetch RUN_ID
 ```
 
-### 2. 申请推荐资源
+这个 smoke 会在 `outputs/` 和 `ckpts/` 下生成很小的示例产物，包括 `outputs/metrics.jsonl`、`outputs/summary.json` 和 `ckpts/last.ckpt`。
 
-```bash
-servertool request medium
+## 配置模型
+
+默认本地文件：
+
+```text
+~/.config/servertool/
+  lab.env
+  user.env
+  smtp.env
 ```
 
-### 3. 检查节点和 GPU
+优先级：
 
-```bash
-servertool status quick
-nvidia-smi
-echo $CUDA_VISIBLE_DEVICES
+```text
+environment > user.env > lab.env > built-in defaults
 ```
 
-### 4. 查看作业
+职责划分：
 
-```bash
-servertool jobs
-servertool jobs who
-servertool jobs info JOBID
+- `lab.env`：实验室公共字段，例如远端主机、共享根目录、分区、镜像源、SMTP 设置
+- `user.env`：成员个人字段，例如 `workspace_name`、`member_id`、通知邮箱、本地 run cache
+- `smtp.env`：仅管理员维护的 SMTP 用户名和密码
+
+可用命令：
+
+- `servertool config show`：查看当前生效配置
+- `servertool config path`：查看 `lab.env`、`user.env`、`smtp.env` 路径
+
+公开配置模板放在 `examples/config/`。
+
+## 结构化 Spec
+
+`servertool` 现在使用结构化 `spec.json`。
+
+支持的资产来源类型：
+
+- `assets.code.source`：`sync`
+- `assets.dataset.source`：`none | sync | shared_path`
+- `assets.env.source`：`none | shared_path | build | upload`
+- `assets.model.source`：`none | hub | shared_path | upload`
+
+设计规则：
+
+- 环境优先使用 `shared_path` 或 `build`
+- 模型优先使用 `hub` 或 `shared_path`
+- `upload` 只作为兜底
+- `shared_path` 必须是绝对远端路径
+- `fetch.include` 必须是相对 run 根目录的 pattern，`run fetch` 会按这些 pattern 拉回产物
+- runner 会注入共享缓存和镜像相关环境变量，例如 `HF_HOME`、`HF_HUB_CACHE`、`MODELSCOPE_CACHE`、`PIP_CACHE_DIR`、`CONDA_PKGS_DIRS`、`PIP_INDEX_URL`、`PIP_EXTRA_INDEX_URL`、`HF_ENDPOINT`、`MODELSCOPE_ENDPOINT`
+
+## 远端目录布局
+
+实验室共享层：
+
+```text
+<shared_home>/trainhub/
+  .runner/
+    releases/<version>/servertool/
+    current -> releases/<version>
+  lab/
+    lab.env
+    smtp.env
+  envs/
+  models/
+  cache/
 ```
 
-### 5. 查看共享磁盘
+成员层：
 
-```bash
-servertool disk show
-servertool disk detail
-servertool disk update
+```text
+<shared_home>/<workspace>/.servertool/
+  config.env
+  projects/<project>/runs/<run_id>/
 ```
 
-## 配置方式
+## 安全默认值
 
-`servertool` 现在支持“按共享账号保存”的本地配置文件。登录到某个共享账号后，建议先执行一次：
+当前 CLI 默认是 member-scoped：
 
-```bash
-servertool config setup
-```
+- `run status`、`logs`、`fetch`、`cleanup` 默认只允许访问当前成员的 run
+- `run list` 默认只显示当前成员的本地记录
+- legacy 共享根 run 只有在存在匹配本地 run record 时才允许继续访问
+- cleanup 默认保守，非终态 run 需要显式 `--force`
 
-默认会把配置写入 `~/.config/servertool/config.env`，后续命令会自动读取。只有在自动化场景下，才需要再用环境变量覆盖这些值。
+## FAQ
 
-注意：不要把密码或 SSH 私钥写入这个配置文件。`servertool` 只需要共享账号、共享目录、分区、时长、认证地址这类集群元信息。
+### 管理员只给了我 `lab.env`，下一步做什么？
 
-对于 controller 工作流，还会用到远端主机、远端根目录、本地 run 缓存和 SMTP 路径等配置。SMTP 用户名和授权码应单独放在本地 secrets 文件中，例如 `~/.config/servertool/smtp.env`。
+先把它放到 `~/.config/servertool/lab.env`，然后执行 `servertool init` 和 `servertool doctor`。
 
-仓库中附带了一份脱敏的 `.env.example` 作为部署模板：
+### 为什么 `run fetch` 拉回来的文件比我预期少？
 
-- `SERVERTOOL_SHARED_ACCOUNT`
-- `SERVERTOOL_WORKSPACE_NAME`
-- `SERVERTOOL_SHARED_HOME`
-- `SERVERTOOL_AUTH_URL`
-- `SERVERTOOL_NETWORK_PROBE_URL`
-- `SERVERTOOL_A40_PARTITION`
-- `SERVERTOOL_A6000_PARTITION`
-- `SERVERTOOL_A40_MAX_TIME`
-- `SERVERTOOL_A6000_MAX_TIME`
-- `SERVERTOOL_DEFAULT_COMPUTE_HOST`
-- `SERVERTOOL_QUOTA_LIMIT`
-- `SERVERTOOL_CACHE_FILE`
-- `SERVERTOOL_TEST_OUTPUT_DIR`
-- `SERVERTOOL_INSTALL_PATH`
-- `SERVERTOOL_CONFIG_FILE`
-- `SERVERTOOL_REMOTE_HOST`
-- `SERVERTOOL_REMOTE_USER`
-- `SERVERTOOL_REMOTE_PORT`
-- `SERVERTOOL_REMOTE_ROOT`
-- `SERVERTOOL_REMOTE_PYTHON`
-- `SERVERTOOL_LOCAL_RUN_CACHE`
-- `SERVERTOOL_NOTIFY_EMAIL_TO`
-- `SERVERTOOL_NOTIFY_EMAIL_FROM`
-- `SERVERTOOL_SMTP_HOST`
-- `SERVERTOOL_SMTP_PORT`
-- `SERVERTOOL_SMTP_USE_SSL`
-- `SERVERTOOL_SMTP_SECRETS_FILE`
+`run fetch` 会按 spec 里的 `fetch.include` 和远端 `status.json` 里记录的抓取规则过滤文件。需要更多产物时，先把目标路径补进 `fetch.include`。
 
-兼容说明：控制端也支持把 `SERVERIP` 和 `SERVERUSERNAME` 作为 `SERVERTOOL_REMOTE_HOST` 与 `SERVERTOOL_REMOTE_USER` 的回退来源。
+### 普通成员可以直接用 `servertool remote` 或 `servertool runner` 吗？
 
-## 开源安全
+不建议。它们属于内部实现接口，日常流程应只用 `init`、`doctor`、`spec`、`run`、`admin`。
 
-当前仓库不会包含以下信息：
+### 为什么提示某个 run 属于别的成员？
 
-- 真实生产服务器 IP
-- 集群密码
-- 私有认证地址
-- 与真实服务器强绑定的用户名
+这是 member-scoped 默认安全边界在生效。先运行 `servertool config show`，确认当前 `workspace_name` 和 `member_id` 是否与你要访问的 run 一致。
 
-如需在内部环境使用，请通过本地配置文件或部署时单独注入这些值，不要直接写入源码仓库。
+### 去哪里看当前生效的配置文件？
 
-当前源码默认不包含任何字面量服务器 IP。网络连通性探测改为使用可配置的 `SERVERTOOL_NETWORK_PROBE_URL`，避免把固定地址写入公开仓库。
+执行 `servertool config path` 看路径，执行 `servertool config show` 看最终生效值。
 
-## 开发校验
+## 开发与校验
+
+常用本地校验：
 
 ```bash
 python3 -m compileall src
-python3 servertool help
 python3 -m unittest discover tests
+python3 -m build
 ```
 
-## 目录结构
-
-```text
-servertool/
-├── .gitignore
-├── LICENSE
-├── pyproject.toml
-├── README.md
-├── README.zh-CN.md
-├── servertool
-├── src/
-│   └── servertool/
-│       ├── __init__.py
-│       ├── __main__.py
-│       ├── app.py
-│       ├── commands/
-│       ├── controller/
-│       ├── context.py
-│       ├── runner/
-│       ├── shared/
-│       ├── config.py
-│       ├── layout.py
-│       ├── notify_email.py
-│       ├── output.py
-│       ├── remote.py
-│       ├── runner_state.py
-│       ├── spec.py
-│       ├── system.py
-└── tests/
-```
-
-现在内部代码已按 `controller/`、`runner/`、`shared/` 三层拆分，但对外仍保持单一 CLI 名称 `servertool`。
+仓库不会包含真实生产服务器地址、凭据和私有内部地址。请通过本地配置文件或环境变量在源码外注入这些值。

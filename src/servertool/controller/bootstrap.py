@@ -9,17 +9,49 @@ from .transport import (
     build_ssh_command,
     remote_runner_module_root,
     remote_servertool_env,
+    remote_servertool_env_for_module,
     servertool_remote_argv,
 )
+
+
+ACTIVATE_RUNNER_RELEASE = """
+from pathlib import Path
+import shutil
+import sys
+
+current = Path(sys.argv[1])
+release = Path(sys.argv[2])
+if not release.is_dir():
+    raise SystemExit(f"missing release: {release.as_posix()}")
+current.parent.mkdir(parents=True, exist_ok=True)
+if current.is_symlink() or current.is_file():
+    current.unlink()
+elif current.exists():
+    backup = current.with_name(current.name + ".backup")
+    if backup.is_symlink() or backup.is_file():
+        backup.unlink()
+    elif backup.exists():
+        shutil.rmtree(backup)
+    shutil.move(str(current), str(backup))
+current.symlink_to(release, target_is_directory=True)
+print(f"{current.as_posix()} -> {release.as_posix()}")
+""".strip()
 
 
 @dataclass(frozen=True)
 class BootstrapPaths:
     local_runner_source: Path
     local_smtp_secrets_file: Path
-    remote_config_dir: PurePosixPath
-    remote_config_file: PurePosixPath
+    runner_release: str
+    remote_lab_config_dir: PurePosixPath
+    remote_lab_config_file: PurePosixPath
+    remote_member_root: PurePosixPath
+    remote_member_config_file: PurePosixPath
     remote_smtp_secrets_file: PurePosixPath
+    remote_runner_install_root: PurePosixPath
+    remote_runner_releases_root: PurePosixPath
+    remote_runner_current_root: PurePosixPath
+    remote_runner_release_root: PurePosixPath
     remote_module_root: PurePosixPath
     remote_package_dir: PurePosixPath
 
@@ -32,39 +64,107 @@ def local_runner_source(root: Path) -> Path:
 
 
 def bootstrap_paths(config: Config) -> BootstrapPaths:
-    remote_config_dir = PurePosixPath(config.shared_home.as_posix()) / ".config" / "servertool"
-    remote_smtp_secrets_file = remote_config_dir / "smtp.env"
     remote_module_root = remote_runner_module_root(config)
+    runner_release = config.version
+    remote_runner_release_root = config.remote_runner_release_root(runner_release)
     return BootstrapPaths(
         local_runner_source=local_runner_source(config.root),
         local_smtp_secrets_file=config.smtp_secrets_file,
-        remote_config_dir=remote_config_dir,
-        remote_config_file=remote_config_dir / "config.env",
-        remote_smtp_secrets_file=remote_smtp_secrets_file,
+        runner_release=runner_release,
+        remote_lab_config_dir=config.remote_lab_config_dir,
+        remote_lab_config_file=config.remote_lab_config_file,
+        remote_member_root=config.remote_member_root_posix,
+        remote_member_config_file=config.remote_member_config_file,
+        remote_smtp_secrets_file=config.remote_lab_smtp_secrets_file,
+        remote_runner_install_root=config.remote_runner_install_root,
+        remote_runner_releases_root=config.remote_runner_releases_root,
+        remote_runner_current_root=config.remote_runner_current_root,
+        remote_runner_release_root=remote_runner_release_root,
         remote_module_root=remote_module_root,
-        remote_package_dir=remote_module_root / "servertool",
+        remote_package_dir=remote_runner_release_root / "servertool",
     )
 
 
-def render_remote_runner_config(config: Config, paths: BootstrapPaths) -> str:
+def render_remote_lab_config(config: Config, paths: BootstrapPaths) -> str:
     return render_env_file(
         [
             ("SERVERTOOL_SHARED_ACCOUNT", config.shared_account),
             ("SERVERTOOL_SHARED_HOME", config.shared_home.as_posix()),
-            ("SERVERTOOL_WORKSPACE_NAME", config.workspace_name),
             ("SERVERTOOL_REMOTE_ROOT", config.remote_root),
-            ("SERVERTOOL_RUNNER_ROOT", config.remote_root),
+            ("SERVERTOOL_A40_PARTITION", config.a40_partition),
+            ("SERVERTOOL_A6000_PARTITION", config.a6000_partition),
+            ("SERVERTOOL_A40_MAX_TIME", config.a40_max_time),
+            ("SERVERTOOL_A6000_MAX_TIME", config.a6000_max_time),
             ("SERVERTOOL_NOTIFY_EMAIL_FROM", config.notify_email_from),
-            ("SERVERTOOL_NOTIFY_EMAIL_TO", config.notify_email_to),
             ("SERVERTOOL_SMTP_HOST", config.smtp_host),
             ("SERVERTOOL_SMTP_PORT", str(config.smtp_port)),
             ("SERVERTOOL_SMTP_USE_SSL", "1" if config.smtp_use_ssl else "0"),
             ("SERVERTOOL_SMTP_SECRETS_FILE", paths.remote_smtp_secrets_file.as_posix()),
+            ("SERVERTOOL_PIP_INDEX_URL", config.pip_index_url),
+            ("SERVERTOOL_PIP_EXTRA_INDEX_URL", config.pip_extra_index_url),
+            ("SERVERTOOL_CONDA_CHANNELS", config.conda_channels),
+            ("SERVERTOOL_HF_ENDPOINT", config.hf_endpoint),
+            ("SERVERTOOL_MODELSCOPE_ENDPOINT", config.modelscope_endpoint),
+            ("SERVERTOOL_SHARED_ENV_ROOT", config.shared_env_root),
+            ("SERVERTOOL_SHARED_MODEL_ROOT", config.shared_model_root),
+            ("SERVERTOOL_SHARED_CACHE_ROOT", config.shared_cache_root),
         ],
         comments=(
-            "# Runner-side servertool configuration.",
-            "# Generated by 'servertool remote bootstrap'.",
+            "# Shared lab-level servertool configuration.",
+            "# Generated by 'servertool admin deploy'.",
             "# Keep SMTP secrets in the separate smtp.env file.",
+        ),
+    )
+
+
+def render_remote_member_config(config: Config, paths: BootstrapPaths) -> str:
+    return render_env_file(
+        [
+            ("SERVERTOOL_MEMBER_ID", config.member_id),
+            ("SERVERTOOL_WORKSPACE_NAME", config.workspace_name),
+            ("SERVERTOOL_REMOTE_MEMBER_ROOT", paths.remote_member_root.as_posix()),
+            ("SERVERTOOL_RUNNER_ROOT", paths.remote_member_root.as_posix()),
+            ("SERVERTOOL_NOTIFY_EMAIL_TO", config.notify_email_to),
+        ],
+        comments=(
+            "# Member-scoped servertool configuration.",
+            "# Generated by 'servertool init'.",
+            "# Runs and synced assets stay isolated under this workspace.",
+        ),
+    )
+
+
+def _verify_runner_command(config: Config, module_root: PurePosixPath, label: str) -> tuple[str, list[str]]:
+    return (
+        label,
+        build_ssh_command(
+            config,
+            servertool_remote_argv(
+                config,
+                ["version"],
+                env=remote_servertool_env_for_module(config, module_root),
+            ),
+        ),
+    )
+
+
+def _activate_runner_release_command(
+    config: Config,
+    current_root: PurePosixPath,
+    release_root: PurePosixPath,
+    release: str,
+) -> tuple[str, list[str]]:
+    return (
+        f"Activate runner release {release}",
+        build_ssh_command(
+            config,
+            [
+                config.remote_python,
+                "-c",
+                ACTIVATE_RUNNER_RELEASE,
+                current_root.as_posix(),
+                release_root.as_posix(),
+            ],
         ),
     )
 
@@ -72,10 +172,17 @@ def render_remote_runner_config(config: Config, paths: BootstrapPaths) -> str:
 def build_install_runner_commands(config: Config, paths: BootstrapPaths) -> list[tuple[str, list[str]]]:
     return [
         (
-            "Create remote runner directory",
+            "Create remote runner directories",
             build_ssh_command(
                 config,
-                ["mkdir", "-p", paths.remote_module_root.as_posix(), paths.remote_package_dir.as_posix()],
+                [
+                    "mkdir",
+                    "-p",
+                    paths.remote_runner_install_root.as_posix(),
+                    paths.remote_runner_releases_root.as_posix(),
+                    paths.remote_runner_release_root.as_posix(),
+                    paths.remote_package_dir.as_posix(),
+                ],
             ),
         ),
         (
@@ -88,35 +195,41 @@ def build_install_runner_commands(config: Config, paths: BootstrapPaths) -> list
                 extra_args=("--delete",),
             ),
         ),
-        (
-            "Verify remote runner",
-            build_ssh_command(
-                config,
-                servertool_remote_argv(
-                    config,
-                    ["version"],
-                    env=remote_servertool_env(config),
-                ),
-            ),
+        _verify_runner_command(config, paths.remote_runner_release_root, f"Verify staged runner release {paths.runner_release}"),
+        _activate_runner_release_command(
+            config,
+            paths.remote_runner_current_root,
+            paths.remote_runner_release_root,
+            paths.runner_release,
         ),
+        _verify_runner_command(config, paths.remote_module_root, "Verify remote runner"),
     ]
 
 
-def build_bootstrap_commands(
+def build_lab_bootstrap_commands(
     config: Config,
     paths: BootstrapPaths,
-    runner_config_path: Path,
+    lab_config_path: Path,
     smtp_source_path: Path | None,
 ) -> list[tuple[str, list[str]]]:
     remote_dirs = [
         config.remote_root,
-        paths.remote_module_root.as_posix(),
+        paths.remote_runner_install_root.as_posix(),
+        paths.remote_runner_releases_root.as_posix(),
+        paths.remote_runner_release_root.as_posix(),
         paths.remote_package_dir.as_posix(),
-        paths.remote_config_dir.as_posix(),
+        paths.remote_lab_config_dir.as_posix(),
+        config.shared_env_root,
+        config.shared_model_root,
+        config.shared_cache_root,
+        config.shared_pip_cache_root.as_posix(),
+        config.shared_conda_cache_root.as_posix(),
+        config.shared_huggingface_cache_root.as_posix(),
+        config.shared_modelscope_cache_root.as_posix(),
     ]
     commands: list[tuple[str, list[str]]] = [
         (
-            "Create remote bootstrap directories",
+            "Create remote lab directories",
             build_ssh_command(config, ["mkdir", "-p", *remote_dirs]),
         ),
         (
@@ -129,12 +242,13 @@ def build_bootstrap_commands(
                 extra_args=("--delete",),
             ),
         ),
+        _verify_runner_command(config, paths.remote_runner_release_root, f"Verify staged runner release {paths.runner_release}"),
         (
-            "Upload runner config",
-            build_rsync_push_command(config, runner_config_path, paths.remote_config_file, contents_only=False),
+            "Upload shared lab config",
+            build_rsync_push_command(config, lab_config_path, paths.remote_lab_config_file, contents_only=False),
         ),
     ]
-    chmod_targets = [paths.remote_config_file.as_posix()]
+    chmod_targets = [paths.remote_lab_config_file.as_posix()]
     if smtp_source_path is not None:
         commands.append(
             (
@@ -154,17 +268,67 @@ def build_bootstrap_commands(
                 "Secure remote config files",
                 build_ssh_command(config, ["chmod", "600", *chmod_targets]),
             ),
-            (
-                "Verify remote runner",
-                build_ssh_command(
-                    config,
-                    servertool_remote_argv(
-                        config,
-                        ["version"],
-                        env=remote_servertool_env(config),
-                    ),
-                ),
+            _activate_runner_release_command(
+                config,
+                paths.remote_runner_current_root,
+                paths.remote_runner_release_root,
+                paths.runner_release,
             ),
+            _verify_runner_command(config, paths.remote_module_root, "Verify remote runner"),
         ]
     )
     return commands
+
+
+def build_member_bootstrap_commands(
+    config: Config,
+    paths: BootstrapPaths,
+    member_config_path: Path,
+) -> list[tuple[str, list[str]]]:
+    return [
+        (
+            "Create remote member directories",
+            build_ssh_command(config, ["mkdir", "-p", paths.remote_member_root.as_posix()]),
+        ),
+        (
+            "Upload member config",
+            build_rsync_push_command(config, member_config_path, paths.remote_member_config_file, contents_only=False),
+        ),
+        (
+            "Secure remote member config",
+            build_ssh_command(config, ["chmod", "600", paths.remote_member_config_file.as_posix()]),
+        ),
+        (
+            "Verify remote runner",
+            build_ssh_command(
+                config,
+                servertool_remote_argv(
+                    config,
+                    ["version"],
+                    env=remote_servertool_env(config),
+                ),
+            ),
+        ),
+    ]
+
+
+def build_bootstrap_commands(
+    config: Config,
+    paths: BootstrapPaths,
+    lab_config_path: Path,
+    member_config_path: Path,
+    smtp_source_path: Path | None,
+) -> list[tuple[str, list[str]]]:
+    return build_lab_bootstrap_commands(config, paths, lab_config_path, smtp_source_path) + build_member_bootstrap_commands(
+        config,
+        paths,
+        member_config_path,
+    )
+
+
+def build_rollback_runner_commands(config: Config, release: str) -> list[tuple[str, list[str]]]:
+    release_root = config.remote_runner_release_root(release)
+    return [
+        _activate_runner_release_command(config, config.remote_runner_current_root, release_root, release),
+        _verify_runner_command(config, config.remote_runner_current_root, "Verify remote runner"),
+    ]

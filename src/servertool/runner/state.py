@@ -33,9 +33,16 @@ def layout_paths(layout: RunLayout) -> dict[str, str]:
     }
 
 
-def build_meta(spec: RunSpec, run_id: str, layout: RunLayout, created_at: str | None = None) -> dict[str, Any]:
+def build_meta(
+    spec: RunSpec,
+    run_id: str,
+    layout: RunLayout,
+    created_at: str | None = None,
+    member_id: str = "",
+    audit: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     timestamp = created_at or utc_now_text()
-    return {
+    payload = {
         "version": STATE_VERSION,
         "run_id": run_id,
         "project": spec.project,
@@ -45,6 +52,11 @@ def build_meta(spec: RunSpec, run_id: str, layout: RunLayout, created_at: str | 
         "created_at": timestamp,
         "paths": layout_paths(layout),
     }
+    if member_id:
+        payload["member_id"] = member_id
+    if audit:
+        payload["audit"] = dict(audit)
+    return payload
 
 
 def build_status(
@@ -59,9 +71,12 @@ def build_status(
     pid: int | None = None,
     exit_code: int | None = None,
     notify_error: str = "",
+    member_id: str = "",
+    assets: Mapping[str, Any] | None = None,
+    fetch_include: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     timestamp = created_at or utc_now_text()
-    return {
+    payload = {
         "version": STATE_VERSION,
         "run_id": run_id,
         "state": state,
@@ -76,6 +91,13 @@ def build_status(
         "paths": layout_paths(layout),
         "notify_error": notify_error,
     }
+    if member_id:
+        payload["member_id"] = member_id
+    if assets:
+        payload["assets"] = dict(assets)
+    if fetch_include:
+        payload["fetch"] = {"include": list(fetch_include)}
+    return payload
 
 
 def read_json(path: Path) -> dict[str, Any]:

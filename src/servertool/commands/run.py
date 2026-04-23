@@ -17,8 +17,8 @@ from ..shared.system import print_table, run_command, shlex_join
 def register(subparsers: _SubParsersAction[ArgumentParser]) -> ArgumentParser:
     parser = subparsers.add_parser(
         "run",
-        help="Control remote training runs",
-        description="Submit specs to the remote runner and inspect remote run status.",
+        help="Control training runs",
+        description="Submit specs to the shared runner and inspect member-scoped run status.",
     )
     parser.add_argument(
         "mode",
@@ -34,6 +34,7 @@ def register(subparsers: _SubParsersAction[ArgumentParser]) -> ArgumentParser:
     parser.add_argument("--stderr", action="store_true", help="Read stderr.log instead of stdout.log")
     parser.add_argument("--follow", action="store_true", help="Poll remote logs and print new output")
     parser.add_argument("--json", action="store_true", help="Print JSON output for supported commands")
+    parser.add_argument("--all-members", action="store_true", help="Show local records for all member ids")
     parser.add_argument("--force", action="store_true", help="Override cleanup safety checks")
     parser.add_argument("--local-only", action="store_true", help="Cleanup only local run files")
     parser.add_argument("--remote-only", action="store_true", help="Cleanup only remote run files")
@@ -47,7 +48,7 @@ def _require_remote_host(context: AppContext) -> bool:
         return True
     except ValueError as error:
         context.console.fail(str(error))
-        context.console.info("Run 'servertool config setup' and set the remote host first")
+        context.console.info("Run 'servertool init' after the admin has provided the lab config and remote host")
         return False
 
 
@@ -142,6 +143,7 @@ def _run_submit(args: Namespace, context: AppContext) -> int:
         spec_path,
         plan.remote_spec,
         plan.layout.run_root,
+        plan.audit.to_record(),
     )
     context.console.ok(f"Submitted run: {plan.run_id}")
     context.console.info(f"Remote run path: {plan.layout.run_root.as_posix()}")
@@ -215,6 +217,8 @@ def _run_fetch(args: Namespace, context: AppContext) -> int:
     if args.dry_run:
         print(f"Remote run path: {plan.remote_run_root.as_posix()}")
         print(f"Local destination: {plan.local_run_root}")
+        if plan.fetch_include:
+            print(f"Fetch include: {', '.join(plan.fetch_include)}")
         print("")
         print(shlex_join(list(plan.command)))
         return 0
@@ -237,12 +241,19 @@ def _run_fetch(args: Namespace, context: AppContext) -> int:
 
 
 def _run_list(args: Namespace, context: AppContext) -> int:
-    records = record_ops.iter_run_records(context.config)
+    records = (
+        record_ops.iter_all_run_records(context.config)
+        if args.all_members
+        else record_ops.iter_run_records(context.config)
+    )
     if not records:
         if args.json:
             print("[]")
             return 0
-        context.console.info("No local run records found")
+        if args.all_members:
+            context.console.info("No local run records found")
+        else:
+            context.console.info(f"No local run records found for member '{context.config.member_id}'")
         return 0
 
     if args.json:
@@ -254,12 +265,13 @@ def _run_list(args: Namespace, context: AppContext) -> int:
         rows.append(
             [
                 str(record.get("run_id", "")),
+                str(record.get("member_id", "") or "(legacy)"),
                 str(record.get("project", "")),
                 str(record.get("submitted_at", "")),
                 str(record.get("remote_host", "")),
             ]
         )
-    print_table(["RUN_ID", "PROJECT", "SUBMITTED_AT", "REMOTE_HOST"], rows)
+    print_table(["RUN_ID", "MEMBER", "PROJECT", "SUBMITTED_AT", "REMOTE_HOST"], rows)
     return 0
 
 

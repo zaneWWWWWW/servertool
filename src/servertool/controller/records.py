@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 import json
+from typing import Any, Mapping
 
 from ..runner.state import read_json, utc_now_text, write_json
 from ..shared.config import Config
@@ -22,24 +23,34 @@ def write_run_record(
     spec_path: Path,
     remote_spec: RunSpec,
     remote_run_root: PurePosixPath,
+    audit: Mapping[str, Any] | None = None,
 ) -> None:
+    payload: dict[str, Any] = {
+        "version": "1",
+        "run_id": run_id,
+        "member_id": config.member_id,
+        "workspace_name": config.workspace_name,
+        "project": remote_spec.project,
+        "assets": remote_spec.assets.to_dict(),
+        "fetch_include": list(remote_spec.fetch.include),
+        "spec_path": str(spec_path),
+        "remote_host": config.remote_host,
+        "remote_user": config.remote_user,
+        "remote_root": config.remote_member_root,
+        "remote_run_root": remote_run_root.as_posix(),
+        "remote_member_root": config.remote_member_root,
+        "remote_trainhub_root": config.remote_root,
+        "submitted_at": utc_now_text(),
+    }
+    if audit:
+        payload.update(dict(audit))
     write_json(
         run_record_path(config, run_id),
-        {
-            "version": "1",
-            "run_id": run_id,
-            "project": remote_spec.project,
-            "spec_path": str(spec_path),
-            "remote_host": config.remote_host,
-            "remote_root": remote_run_root.as_posix(),
-            "remote_run_root": remote_run_root.as_posix(),
-            "remote_trainhub_root": config.remote_root,
-            "submitted_at": utc_now_text(),
-        },
+        payload,
     )
 
 
-def update_run_record(config: Config, run_id: str, updates: dict[str, str]) -> None:
+def update_run_record(config: Config, run_id: str, updates: Mapping[str, Any]) -> None:
     path = run_record_path(config, run_id)
     payload = read_json(path) if path.exists() else {"version": "1", "run_id": run_id}
     payload.update(updates)
@@ -67,7 +78,36 @@ def iter_run_records(config: Config) -> list[dict[str, object]]:
             payload = read_json(path)
         except (OSError, ValueError, json.JSONDecodeError):
             continue
+        if not _record_matches_current_member(config, payload):
+            continue
         payload.setdefault("record_path", str(path))
         records.append(payload)
     records.sort(key=lambda item: str(item.get("submitted_at", "")), reverse=True)
     return records
+
+
+def iter_all_run_records(config: Config) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    if not config.local_run_cache.exists():
+        return records
+    for path in sorted(config.local_run_cache.glob("*.json")):
+        try:
+            payload = read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        payload.setdefault("record_path", str(path))
+        records.append(payload)
+    records.sort(key=lambda item: str(item.get("submitted_at", "")), reverse=True)
+    return records
+
+
+def _record_matches_current_member(config: Config, record: Mapping[str, Any]) -> bool:
+    member_id = str(record.get("member_id", "")).strip()
+    if member_id:
+        return member_id == config.member_id
+
+    remote_member_root = str(record.get("remote_member_root", "")).strip()
+    if remote_member_root:
+        return remote_member_root == config.remote_member_root
+
+    return True

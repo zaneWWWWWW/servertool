@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import time
+
+
+def _artifact_root() -> Path:
+    run_dir = os.getenv("SERVERTOOL_RUN_DIR", "").strip()
+    if run_dir:
+        return Path(run_dir)
+    return Path.cwd()
 
 
 def main() -> int:
@@ -14,8 +22,9 @@ def main() -> int:
     parser.add_argument("--ckpt-dir", default="ckpts")
     args = parser.parse_args()
 
-    output_dir = Path(args.output_dir)
-    ckpt_dir = Path(args.ckpt_dir)
+    artifact_root = _artifact_root()
+    output_dir = artifact_root / args.output_dir
+    ckpt_dir = artifact_root / args.ckpt_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -39,6 +48,7 @@ def main() -> int:
         "status": "ok",
         "steps": steps,
         "metrics_path": metrics_path.as_posix(),
+        "run_dir": artifact_root.as_posix(),
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     (ckpt_dir / "last.ckpt").write_text("fake checkpoint\n", encoding="utf-8")

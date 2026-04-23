@@ -3,64 +3,86 @@ from __future__ import annotations
 from argparse import ArgumentParser, Namespace, RawDescriptionHelpFormatter
 from pathlib import Path
 from typing import Optional, Sequence
+import re
 import sys
 
 from .shared.config import Config
 from .context import AppContext
 from .output import Console
-from .commands import configure, disk, jobs, quickstart, remote, request, run, runner, spec, status, testjob
+from .commands import admin, configure, doctor, init, remote, run, runner, spec
+
+
+class PublicCommandParser(ArgumentParser):
+    hidden_subcommands: tuple[str, ...] = ()
+
+    def format_help(self) -> str:
+        text = super().format_help()
+        if not self.hidden_subcommands:
+            return text
+
+        hidden = set(self.hidden_subcommands)
+
+        def _filter_choice_block(match: re.Match[str]) -> str:
+            items = [item for item in match.group(1).split(",") if item not in hidden]
+            return "{" + ",".join(items) + "}"
+
+        lines: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if any(stripped.startswith(f"{name} ") and "==SUPPRESS==" in stripped for name in hidden):
+                continue
+            lines.append(line)
+
+        sanitized = "\n".join(lines)
+        sanitized = re.sub(r"\{([^{}]+)\}", _filter_choice_block, sanitized)
+        sanitized = sanitized.replace(",,", ",").replace("{,", "{").replace(",}", "}")
+        if text.endswith("\n"):
+            sanitized += "\n"
+        return sanitized
 
 
 def _build_parser(context: AppContext) -> ArgumentParser:
     help_topics = [
-        "status",
-        "jobs",
-        "disk",
+        "init",
         "config",
-        "request",
-        "quickstart",
-        "test",
+        "doctor",
         "spec",
-        "runner",
-        "remote",
         "run",
+        "admin",
     ]
-    parser = ArgumentParser(
+    hidden_commands = ("runner", "remote")
+    parser = PublicCommandParser(
         prog=context.config.name,
-        description="Servertool is a Python CLI for Ubuntu cluster resource operations.",
+        description="Servertool is a training CLI for shared-account lab workflows.",
         epilog=(
             "Examples:\n"
-            "  servertool status\n"
-            "  servertool jobs who\n"
-            "  servertool disk update\n"
-            "  servertool config setup\n"
-            "  servertool remote doctor\n"
-            "  servertool remote cleanup RUN_ID --dry-run\n"
+            "  servertool init\n"
+            "  servertool config show\n"
+            "  servertool doctor\n"
             "  servertool spec init spec.json\n"
             "  servertool run submit --dry-run spec.json\n"
+            "  servertool run list --json --all-members\n"
             "  servertool run cleanup RUN_ID --dry-run\n"
-            "  servertool runner prepare spec.json\n"
-            "  servertool runner notify --test you@example.com\n"
-            "  servertool request guide\n"
-            "  servertool request medium"
+            "  servertool admin deploy\n"
+            "  servertool admin rollback 2.9.0\n"
+            "  servertool admin doctor"
         ),
         formatter_class=RawDescriptionHelpFormatter,
     )
+    parser.hidden_subcommands = hidden_commands
     parser.add_argument("--version", action="version", version=f"{context.config.name} {context.config.version}")
     subparsers = parser.add_subparsers(dest="command")
 
     context.topic_parsers["main"] = parser
-    context.topic_parsers["status"] = status.register(subparsers)
-    context.topic_parsers["jobs"] = jobs.register(subparsers)
-    context.topic_parsers["disk"] = disk.register(subparsers)
+    context.topic_parsers["init"] = init.register(subparsers)
     context.topic_parsers["config"] = configure.register(subparsers)
-    context.topic_parsers["request"] = request.register(subparsers)
-    context.topic_parsers["quickstart"] = quickstart.register(subparsers)
-    context.topic_parsers["test"] = testjob.register(subparsers)
+    context.topic_parsers["doctor"] = doctor.register(subparsers)
     context.topic_parsers["spec"] = spec.register(subparsers)
-    context.topic_parsers["runner"] = runner.register(subparsers)
-    context.topic_parsers["remote"] = remote.register(subparsers)
     context.topic_parsers["run"] = run.register(subparsers)
+    context.topic_parsers["admin"] = admin.register(subparsers)
+
+    context.topic_parsers["runner"] = runner.register(subparsers, hidden=True)
+    context.topic_parsers["remote"] = remote.register(subparsers, hidden=True)
 
     help_parser = subparsers.add_parser("help", help="Show help for a command")
     help_parser.add_argument(

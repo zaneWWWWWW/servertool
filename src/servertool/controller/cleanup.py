@@ -30,6 +30,7 @@ class CleanupPlan:
 
 def build_remote_cleanup_plan(config: Config, run_id: str, *, force: bool = False) -> CleanupPlan:
     record = read_run_record(config, run_id)
+    _validate_record_member_access(config, run_id, record)
     remote_state = ""
     remote_state_confirmed = False
 
@@ -85,6 +86,7 @@ def build_run_cleanup_plan(
         raise ValueError("Cannot combine --local-only and --remote-only")
 
     record = read_run_record(config, run_id)
+    _validate_record_member_access(config, run_id, record)
     actions: list[CleanupAction] = []
     notes: list[str] = []
     remote_state = ""
@@ -163,21 +165,30 @@ def _remote_run_root_from_record(record: dict[str, object] | None) -> PurePosixP
 
 
 def _validate_remote_run_root(config: Config, run_id: str, remote_run_root: PurePosixPath) -> None:
-    try:
-        relative = remote_run_root.relative_to(config.remote_root_posix)
-    except ValueError as error:
-        raise ValueError(
-            f"Refusing to delete remote path outside SERVERTOOL_REMOTE_ROOT: {remote_run_root.as_posix()}"
-        ) from error
-    parts = relative.parts
-    if len(parts) != 4 or parts[0] != "projects" or parts[2] != "runs":
-        raise ValueError(
-            f"Refusing to delete remote path outside projects/*/runs/*: {remote_run_root.as_posix()}"
-        )
-    if parts[3] != run_id:
-        raise ValueError(
-            f"Refusing to delete remote path '{remote_run_root.as_posix()}' because it does not match run id '{run_id}'"
-        )
+    candidate_roots = [config.remote_member_root_posix]
+    if config.remote_root_posix != config.remote_member_root_posix:
+        candidate_roots.append(config.remote_root_posix)
+
+    for root in candidate_roots:
+        try:
+            relative = remote_run_root.relative_to(root)
+        except ValueError:
+            continue
+        parts = relative.parts
+        if len(parts) != 4 or parts[0] != "projects" or parts[2] != "runs":
+            raise ValueError(
+                f"Refusing to delete remote path outside projects/*/runs/*: {remote_run_root.as_posix()}"
+            )
+        if parts[3] != run_id:
+            raise ValueError(
+                f"Refusing to delete remote path '{remote_run_root.as_posix()}' because it does not match run id '{run_id}'"
+            )
+        return
+
+    raise ValueError(
+        "Refusing to delete remote path outside the current member root or legacy shared root: "
+        + remote_run_root.as_posix()
+    )
 
 
 def _planned_fetched_path(
@@ -214,3 +225,13 @@ def _is_relative_to(path: Path, base: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _validate_record_member_access(config: Config, run_id: str, record: dict[str, object] | None) -> None:
+    if not isinstance(record, dict):
+        return
+    record_member_id = str(record.get("member_id", "")).strip()
+    if record_member_id and record_member_id != config.member_id:
+        raise ValueError(
+            f"Run '{run_id}' belongs to member '{record_member_id}', not current member '{config.member_id}'"
+        )

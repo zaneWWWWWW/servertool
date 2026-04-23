@@ -1,12 +1,21 @@
 {
-  "version": "1",
+  "version": "2",
   "project": "servertool",
   "run_name": "smoke-train",
   "assets": {
-    "code": ".",
-    "env": "",
-    "dataset": "",
-    "model": ""
+    "code": {
+      "source": "sync",
+      "path": "."
+    },
+    "dataset": {
+      "source": "none"
+    },
+    "env": {
+      "source": "none"
+    },
+    "model": {
+      "source": "none"
+    }
   },
   "launch": {
     "scheduler": "slurm",

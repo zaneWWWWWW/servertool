@@ -5,18 +5,33 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "servertool"
 version = "3.0.0"
-description = "Python CLI for managing resources and SLURM workloads on Ubuntu server clusters"
+description = "Training CLI for shared-account lab workflows over SSH, rsync, and SLURM"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
   { name = "zanewang" }
 ]
 keywords = ["slurm", "cluster", "cli", "gpu", "scheduler"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: System :: Clustering",
+]
 
 [project.urls]
 Homepage = "https://github.com/zaneWWWWWW/servertool"
 Repository = "https://github.com/zaneWWWWWW/servertool"
+Documentation = "https://github.com/zaneWWWWWW/servertool/tree/main/docs"
+Changelog = "https://github.com/zaneWWWWWW/servertool/blob/main/CHANGELOG.md"
 
 [project.scripts]
 servertool = "servertool.app:main"

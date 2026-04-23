@@ -7,15 +7,21 @@ import shlex
 import shutil
 import subprocess
 import sys
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 
 def command_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def run_command(command: Sequence[str], capture_output: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(command), capture_output=capture_output, text=True)
+def run_command(
+    command: Sequence[str],
+    capture_output: bool = True,
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: str | os.PathLike[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(list(command), capture_output=capture_output, text=True, env=dict(env) if env else None, cwd=cwd)
 
 
 def shlex_join(command: Sequence[str]) -> str:

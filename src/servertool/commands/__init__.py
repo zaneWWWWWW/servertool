@@ -1,15 +1,12 @@
-from . import configure, disk, jobs, quickstart, remote, request, run, runner, spec, status, testjob
+from . import admin, configure, doctor, init, remote, run, runner, spec
 
 __all__ = [
+    "admin",
     "configure",
-    "disk",
-    "jobs",
-    "quickstart",
+    "doctor",
+    "init",
     "remote",
-    "request",
     "run",
     "runner",
     "spec",
-    "status",
-    "testjob",
 ]

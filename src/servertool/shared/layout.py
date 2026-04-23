@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import getpass
 from pathlib import PurePosixPath
 import re
+import secrets
 
 
 def slugify(value: str) -> str:
@@ -11,9 +13,28 @@ def slugify(value: str) -> str:
     return normalized or "run"
 
 
-def build_run_id(run_name: str, now: datetime | None = None) -> str:
+def build_run_id(
+    run_name: str,
+    now: datetime | None = None,
+    *,
+    submitted_by: str | None = None,
+    token: str | None = None,
+) -> str:
     timestamp = now or datetime.now(timezone.utc)
-    return f"{timestamp.astimezone(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{slugify(run_name)}"
+    submitter = slugify(submitted_by or _current_user())
+    suffix = slugify(token or secrets.token_hex(3))
+    return (
+        f"{timestamp.astimezone(timezone.utc).strftime('%Y%m%d-%H%M%S')}-"
+        f"{submitter}-{slugify(run_name)}-{suffix}"
+    )
+
+
+def _current_user() -> str:
+    try:
+        value = getpass.getuser().strip()
+    except (OSError, KeyError):
+        value = ""
+    return value or "user"
 
 
 @dataclass(frozen=True)

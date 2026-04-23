@@ -30,11 +30,30 @@ def servertool_remote_argv(
 
 
 def remote_runner_module_root(config: Config) -> PurePosixPath:
-    return config.remote_root_posix / ".runner"
+    return config.remote_runner_module_root
 
 
 def remote_servertool_env(config: Config, extra_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    env = {"PYTHONPATH": remote_runner_module_root(config).as_posix()}
+    return remote_servertool_env_for_module(config, config.remote_runner_module_root, extra_env=extra_env)
+
+
+def remote_servertool_env_for_module(
+    config: Config,
+    module_root: PurePosixPath,
+    extra_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    env = {
+        # Prefer the versioned current release while keeping the legacy direct install as a fallback.
+        "PYTHONPATH": ":".join(
+            [
+                module_root.as_posix(),
+                config.remote_runner_install_root.as_posix(),
+            ]
+        ),
+        "SERVERTOOL_LAB_CONFIG_FILE": config.remote_lab_config_file.as_posix(),
+        "SERVERTOOL_USER_CONFIG_FILE": config.remote_member_config_file.as_posix(),
+        "SERVERTOOL_RUNNER_ROOT": config.remote_member_root,
+    }
     if extra_env:
         env.update(extra_env)
     return env

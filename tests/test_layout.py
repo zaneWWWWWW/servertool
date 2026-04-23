@@ -14,24 +14,29 @@ class RunLayoutTest(unittest.TestCase):
         run_id = build_run_id(
             "ResNet 50 / LR=1e-3",
             now=datetime(2026, 4, 21, 12, 34, 56, tzinfo=timezone.utc),
+            submitted_by="Zane Wang",
+            token="abc123",
         )
-        self.assertEqual(run_id, "20260421-123456-resnet-50-lr-1e-3")
+        self.assertEqual(run_id, "20260421-123456-zane-wang-resnet-50-lr-1e-3-abc123")
 
     def test_build_run_layout_uses_posix_paths(self) -> None:
         layout = build_run_layout(
-            PurePosixPath("/share/home/gpu2003/trainhub"),
+            PurePosixPath("/share/home/gpu2003/zanewang/.servertool"),
             "Vision Project",
             "20260421-123456-smoke",
         )
         self.assertEqual(layout.project_slug, "vision-project")
-        self.assertEqual(layout.project_root, PurePosixPath("/share/home/gpu2003/trainhub/projects/vision-project"))
+        self.assertEqual(
+            layout.project_root,
+            PurePosixPath("/share/home/gpu2003/zanewang/.servertool/projects/vision-project"),
+        )
         self.assertEqual(
             layout.run_root,
-            PurePosixPath("/share/home/gpu2003/trainhub/projects/vision-project/runs/20260421-123456-smoke"),
+            PurePosixPath("/share/home/gpu2003/zanewang/.servertool/projects/vision-project/runs/20260421-123456-smoke"),
         )
         self.assertEqual(
             layout.status_path,
             PurePosixPath(
-                "/share/home/gpu2003/trainhub/projects/vision-project/runs/20260421-123456-smoke/status.json"
+                "/share/home/gpu2003/zanewang/.servertool/projects/vision-project/runs/20260421-123456-smoke/status.json"
             ),
         )

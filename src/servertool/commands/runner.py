@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from argparse import ArgumentParser, Namespace, _SubParsersAction
+from argparse import SUPPRESS, ArgumentParser, Namespace, _SubParsersAction
 from pathlib import Path, PurePosixPath
 import json
+import os
 import re
 import shlex
 import sys
 
 from ..context import AppContext
+from ..runner.assets import prepare_run_assets
 from ..shared.layout import build_run_id, build_run_layout, slugify
 from ..runner.notify_email import (
     build_run_notification_body,
@@ -25,10 +27,10 @@ JOB_ID_PATTERN = re.compile(r"(\d+)")
 NOTIFIABLE_STATES = {"succeeded", "failed"}
 
 
-def register(subparsers: _SubParsersAction[ArgumentParser]) -> ArgumentParser:
+def register(subparsers: _SubParsersAction[ArgumentParser], *, hidden: bool = False) -> ArgumentParser:
     parser = subparsers.add_parser(
         "runner",
-        help="Manage runner-side run state",
+        help=SUPPRESS if hidden else "Manage runner-side run state",
         description="Prepare runs, inspect status, and deliver runner-side notifications on the Linux host.",
     )
     parser.add_argument(
@@ -82,7 +84,27 @@ def _render_launch_script(
     command: str,
     runner_python: str,
     runner_module_root: str,
+    asset_env: dict[str, str],
+    runtime_env: dict[str, str],
 ) -> str:
+    exports: list[str] = []
+    for key, value in sorted(asset_env.items()):
+        if value:
+            exports.append(f"export {key}={shlex.quote(value)}")
+    for key, value in sorted(runtime_env.items()):
+        if value:
+            exports.append(f"export {key}={shlex.quote(value)}")
+    if asset_env.get("SERVERTOOL_ENV_PATH"):
+        exports.extend(
+            [
+                'if [ -d "$SERVERTOOL_ENV_PATH/bin" ]; then',
+                '  export PATH="$SERVERTOOL_ENV_PATH/bin:$PATH"',
+                "fi",
+            ]
+        )
+    exports_block = "\n".join(exports)
+    if exports_block:
+        exports_block += "\n"
     return (
         "#!/bin/sh\n"
         "set -eu\n\n"
@@ -90,6 +112,7 @@ def _render_launch_script(
         f"WORKDIR={shlex.quote(workdir)}\n"
         f"RUNNER_PYTHON={shlex.quote(runner_python)}\n"
         f"RUNNER_MODULE_ROOT={shlex.quote(runner_module_root)}\n"
+        f"{exports_block}"
         "mkdir -p \"$RUN_DIR/outputs\" \"$RUN_DIR/ckpts\"\n"
         "cd \"$WORKDIR\"\n"
         "set +e\n"
@@ -99,6 +122,21 @@ def _render_launch_script(
         "env PYTHONPATH=\"$RUNNER_MODULE_ROOT\" \"$RUNNER_PYTHON\" -m servertool runner finalize \"$RUN_DIR\" --exit-code \"$EXIT_CODE\" || true\n"
         "exit \"$EXIT_CODE\"\n"
     )
+
+
+def _shared_runtime_env(context: AppContext) -> dict[str, str]:
+    config = context.config
+    return {
+        "PIP_CACHE_DIR": config.shared_pip_cache_root.as_posix(),
+        "CONDA_PKGS_DIRS": config.shared_conda_cache_root.as_posix(),
+        "HF_HOME": config.shared_huggingface_cache_root.as_posix(),
+        "HF_HUB_CACHE": (config.shared_huggingface_cache_root / "hub").as_posix(),
+        "MODELSCOPE_CACHE": config.shared_modelscope_cache_root.as_posix(),
+        "PIP_INDEX_URL": config.pip_index_url,
+        "PIP_EXTRA_INDEX_URL": config.pip_extra_index_url,
+        "HF_ENDPOINT": config.hf_endpoint,
+        "MODELSCOPE_ENDPOINT": config.modelscope_endpoint,
+    }
 
 
 def _render_job_script(context: AppContext, run_root: PurePosixPath, launch_path: PurePosixPath, stdout_log: PurePosixPath, stderr_log: PurePosixPath, run_name: str, partition: str, gpus: int, cpus: int, mem: str, wall_time: str) -> str:
@@ -124,15 +162,38 @@ def _render_job_script(context: AppContext, run_root: PurePosixPath, launch_path
     )
 
 
+def _submission_audit_from_env() -> dict[str, object]:
+    values: dict[str, object] = {}
+    text_keys = {
+        "submitted_by": "SERVERTOOL_SUBMITTED_BY",
+        "controller_user": "SERVERTOOL_CONTROLLER_USER",
+        "controller_host": "SERVERTOOL_CONTROLLER_HOST",
+        "controller_platform": "SERVERTOOL_CONTROLLER_PLATFORM",
+        "controller_version": "SERVERTOOL_CONTROLLER_VERSION",
+        "git_rev": "SERVERTOOL_SOURCE_GIT_REV",
+        "spec_sha256": "SERVERTOOL_SPEC_SHA256",
+    }
+    for key, env_key in text_keys.items():
+        value = os.getenv(env_key, "").strip()
+        if value:
+            values[key] = value
+    dirty = os.getenv("SERVERTOOL_SOURCE_GIT_DIRTY", "").strip().lower()
+    if dirty:
+        values["git_dirty"] = dirty in {"1", "true", "yes", "on"}
+    return values
+
+
 def _run_prepare(args: Namespace, context: AppContext) -> int:
     spec_path = Path(args.target or "spec.json").expanduser()
     try:
         spec = load_spec(spec_path)
-    except (OSError, json.JSONDecodeError, SpecValidationError) as error:
+        asset_env = prepare_run_assets(context.config, spec, spec_path.parent)
+    except (OSError, RuntimeError, json.JSONDecodeError, SpecValidationError) as error:
         context.console.fail(str(error))
         return 1
+    runtime_env = _shared_runtime_env(context)
 
-    run_id = args.run_id or build_run_id(spec.run_name)
+    run_id = args.run_id or build_run_id(spec.run_name, submitted_by=context.config.member_id)
     layout = build_run_layout(PurePosixPath(context.config.runner_root.as_posix()), spec.project, run_id)
     run_dir = _as_local_path(layout.run_root)
     if run_dir.exists():
@@ -143,8 +204,9 @@ def _run_prepare(args: Namespace, context: AppContext) -> int:
     _as_local_path(layout.ckpts_dir).mkdir(parents=True, exist_ok=True)
     write_spec(_as_local_path(layout.spec_path), spec)
 
-    created_at = build_meta(spec, run_id, layout)["created_at"]
-    write_json(_as_local_path(layout.meta_path), build_meta(spec, run_id, layout, created_at=created_at))
+    meta = build_meta(spec, run_id, layout, member_id=context.config.member_id, audit=_submission_audit_from_env())
+    created_at = str(meta["created_at"])
+    write_json(_as_local_path(layout.meta_path), meta)
     write_json(
         _as_local_path(layout.status_path),
         build_status(
@@ -153,16 +215,21 @@ def _run_prepare(args: Namespace, context: AppContext) -> int:
             state="prepared",
             message="Run directory prepared",
             created_at=created_at,
+            member_id=context.config.member_id,
+            assets=spec.assets.to_dict(),
+            fetch_include=spec.fetch.include,
         ),
     )
     _write_executable(
         _as_local_path(layout.launch_path),
         _render_launch_script(
             layout.run_root,
-            _resolve_workdir(layout.run_root, spec.launch.workdir),
+            _resolve_workdir(PurePosixPath(asset_env.get("SERVERTOOL_CODE_PATH", layout.run_root.as_posix())), spec.launch.workdir),
             spec.launch.command,
             sys.executable,
             context.config.root.as_posix(),
+            asset_env,
+            runtime_env,
         ),
     )
     _write_executable(
@@ -195,7 +262,7 @@ def _extract_job_id(text: str) -> str:
 
 def _run_start(args: Namespace, context: AppContext) -> int:
     try:
-        run_dir = _resolve_run_dir(context.config.runner_root, args.target)
+        run_dir = _resolve_run_dir_with_config(context, args.target)
         status_path = run_dir / "status.json"
         job_path = run_dir / "job.sbatch"
         status = read_json(status_path)
@@ -241,6 +308,29 @@ def _resolve_run_dir(runner_root: Path, target: str | None) -> Path:
         return candidate if candidate.is_dir() else candidate.parent
 
     matches = list((runner_root / "projects").glob(f"*/runs/{target}"))
+    return _resolve_run_dir_matches(target, matches)
+
+
+def _resolve_run_dir_with_config(context: AppContext, target: str | None) -> Path:
+    if target is None:
+        return _resolve_run_dir(context.config.runner_root, target)
+
+    candidate = Path(target).expanduser()
+    if candidate.exists():
+        return candidate if candidate.is_dir() else candidate.parent
+
+    search_roots = [context.config.runner_root]
+    legacy_root = Path(context.config.remote_root).expanduser()
+    if legacy_root != context.config.runner_root:
+        search_roots.append(legacy_root)
+
+    matches: list[Path] = []
+    for root in search_roots:
+        matches.extend((root / "projects").glob(f"*/runs/{target}"))
+    return _resolve_run_dir_matches(target, matches)
+
+
+def _resolve_run_dir_matches(target: str | None, matches: list[Path]) -> Path:
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
@@ -250,7 +340,7 @@ def _resolve_run_dir(runner_root: Path, target: str | None) -> Path:
 
 def _run_status(args: Namespace, context: AppContext) -> int:
     try:
-        run_dir = _resolve_run_dir(context.config.runner_root, args.target)
+        run_dir = _resolve_run_dir_with_config(context, args.target)
         status = read_json(run_dir / "status.json")
     except (OSError, ValueError, json.JSONDecodeError) as error:
         context.console.fail(str(error))
@@ -261,7 +351,7 @@ def _run_status(args: Namespace, context: AppContext) -> int:
 
 def _run_tail(args: Namespace, context: AppContext) -> int:
     try:
-        run_dir = _resolve_run_dir(context.config.runner_root, args.target)
+        run_dir = _resolve_run_dir_with_config(context, args.target)
     except (OSError, ValueError) as error:
         context.console.fail(str(error))
         return 1
@@ -342,7 +432,7 @@ def _run_notify(args: Namespace, context: AppContext) -> int:
         return _run_notify_test(args, context)
 
     try:
-        run_dir = _resolve_run_dir(context.config.runner_root, args.target)
+        run_dir = _resolve_run_dir_with_config(context, args.target)
         spec, meta, status_path, status = _load_run_artifacts(run_dir)
     except (OSError, ValueError, json.JSONDecodeError, SpecValidationError) as error:
         context.console.fail(str(error))
@@ -384,7 +474,7 @@ def _run_finalize(args: Namespace, context: AppContext) -> int:
         return 1
 
     try:
-        run_dir = _resolve_run_dir(context.config.runner_root, args.target)
+        run_dir = _resolve_run_dir_with_config(context, args.target)
         spec, meta, status_path, status = _load_run_artifacts(run_dir)
     except (OSError, ValueError, json.JSONDecodeError, SpecValidationError) as error:
         context.console.fail(str(error))

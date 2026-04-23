@@ -1,104 +1,134 @@
 # Servertool
 
-Python CLI for shared cluster operations and controller-to-runner remote training workflows.
+`servertool` is an official training CLI for shared-account lab environments.
 
-**Author:** zanewang  
-**Version:** 3.0.0
+It is built around one stable workflow:
 
-## Scope
-
-`servertool` is built for shared compute environments where users need a single CLI to:
-
-- inspect cluster and node status
-- request GPU resources
-- inspect and cancel SLURM jobs
-- monitor shared disk quota usage
-- validate job submission paths
-- prepare remote training specs on a controller machine
-- sync code and datasets to a Linux runner host
-- launch and monitor remote SLURM training runs without manual SSH sessions
-
-Sensitive deployment details are intentionally excluded from this repository. Real login hosts, authentication URLs, usernames, passwords, and internal addresses must be injected during deployment through environment variables or local operator configuration.
-
-The repository root `servertool/` is the canonical project root. The Python package lives under `src/servertool/`, and deployment-specific values belong in ignored local configuration, not in tracked source files.
-
-## Quick Start
-
-Install in editable mode during development:
-
-```bash
-python3 -m pip install -e .
+```text
+spec -> sync -> prepare -> launch -> monitor -> notify -> fetch
 ```
 
-Then start with:
+The design target is:
+
+- controller: `macOS` or `Windows`
+- runner: `Linux`
+- transport: `ssh + rsync`
+- scheduler: `SLURM / sbatch`
+- deployment model: lab-managed shared runner + member-scoped workspaces
+
+## Official Docs
+
+- Documentation map: `docs/README.md`
+- Chinese overview: `README.zh-CN.md`
+- Member guide: `docs/member-guide.zh-CN.md`
+- Admin guide: `docs/admin-guide.zh-CN.md`
+- Maintainer architecture doc: `docs/architecture.zh-CN.md`
+- Contribution guide: `CONTRIBUTING.md`
+- Maintainer guide: `MAINTAINERS.md`
+- Release notes: `CHANGELOG.md`
+- Public examples: `examples/README.md`
+
+## Repository Layout
+
+- `src/servertool/`: package source
+- `tests/`: automated coverage
+- `docs/`: long-form product and architecture docs
+- `examples/`: public-safe templates and smoke assets
+- `.github/workflows/`: CI and packaging checks
+
+## Public CLI
+
+The public command surface is intentionally small:
 
 ```bash
-servertool help
-servertool status
-servertool request guide
-```
-
-If this is your first time using the cluster workflow, run:
-
-```bash
-servertool quickstart
-```
-
-If you are using the controller-to-runner workflow, the typical first setup is:
-
-```bash
-servertool remote bootstrap
-servertool remote doctor
-servertool runner notify --test you@example.com
-```
-
-## Command Surface
-
-```bash
-servertool status [full|quick|gpu|jobs|network]
-servertool jobs [list|all|who|gpu|info|cancel]
-servertool disk [show|detail|update|auto]
-servertool config [setup|show|path]
-servertool request [guide|light|medium|heavy|a6000|custom]
-servertool quickstart
-servertool test [job|quick]
+servertool init
+servertool config [show|path]
+servertool doctor
 servertool spec [init|show|validate]
-servertool remote [doctor|install-runner|bootstrap|cleanup]
-servertool runner [prepare|start|status|tail|notify|finalize]
 servertool run [submit|status|logs|fetch|list|cleanup]
-servertool help [status|jobs|disk|config|request|quickstart|test]
+servertool admin [deploy|rollback|doctor|show-config]
+servertool help [init|config|doctor|spec|run|admin]
 servertool version
 ```
 
-## Controller Workflow
+Internal `remote` and `runner` commands still exist for implementation and maintenance, but they are not part of the normal user-facing workflow.
 
-The controller-side commands are designed so you do not need to manually log in to the cluster just to sync files or start a run.
+## Quick Start
 
-### 1. Bootstrap the remote runner
+Install from a checked-out repository:
 
 ```bash
-servertool remote bootstrap
-servertool remote doctor
+python3 -m pip install .
+servertool version
+servertool help
 ```
 
-`remote bootstrap` creates `trainhub/.runner` and `~/.config/servertool` on the Linux runner host, uploads the runner package, and syncs runner-side mail configuration.
-
-### 2. Create a run spec
+For local development:
 
 ```bash
-servertool spec init spec.json --project vision --run-name smoke
+python3 -m pip install --upgrade pip
+python3 -m pip install -e .
+```
+
+If you do not want to install a local editable package yet, you can also run from source with:
+
+```bash
+python3 -m servertool version
+./servertool version
+```
+
+## Admin Workflow
+
+Prepare the local config files first:
+
+```text
+~/.config/servertool/
+  lab.env
+  smtp.env
+  user.env
+```
+
+Recommended admin flow:
+
+```bash
+servertool admin show-config
+servertool admin deploy --dry-run
+servertool admin deploy
+servertool admin doctor
+```
+
+What `admin deploy` does:
+
+- stages or upgrades the shared runner release under `<shared_home>/trainhub/.runner/releases/<version>`
+- repoints `.runner/current`
+- uploads shared `lab.env`
+- uploads `smtp.env` if present
+- prepares shared `envs/`, `models/`, and `cache/` roots
+- verifies the active runner release
+
+Rollback is explicit:
+
+```bash
+servertool admin rollback 3.0.0 --dry-run
+servertool admin rollback 3.0.0
+```
+
+## Member Workflow
+
+After the admin provides `lab.env`, each member only needs a personal config layer.
+
+Recommended first-use flow:
+
+```bash
+servertool init
+servertool doctor
+servertool spec init spec.json --project my-project --run-name smoke
 servertool spec validate spec.json
-servertool spec show spec.json
-```
-
-### 3. Submit from the controller
-
-```bash
 servertool run submit spec.json --dry-run
 servertool run submit spec.json
 ```
 
-### 4. Monitor and fetch results
+Monitor and fetch results:
 
 ```bash
 servertool run status RUN_ID
@@ -106,185 +136,142 @@ servertool run logs RUN_ID
 servertool run logs RUN_ID --follow
 servertool run fetch RUN_ID
 servertool run list
-servertool run list --json
 servertool run cleanup RUN_ID --dry-run
-servertool run cleanup RUN_ID
 ```
 
-`run cleanup` is intentionally conservative. It removes the remote run directory plus the local run record, and it only removes fetched files automatically when they live under the default fetched cache. It refuses to delete non-terminal runs unless you pass `--force`. Use `--local-only` or `--remote-only` when you only want one side cleaned up.
+## Smoke Tutorial
 
-If you only want to clean the remote runner side, use:
+The repository includes a tracked smoke spec: `spec.smoke.train.json`.
 
-```bash
-servertool remote cleanup RUN_ID --dry-run
-servertool remote cleanup RUN_ID
-```
-
-### 5. Runner-side commands
-
-These commands are mainly for the Linux runner host and for remote execution through the controller:
-
-```bash
-servertool runner prepare SPEC_PATH
-servertool runner start RUN_ID
-servertool runner status RUN_ID
-servertool runner tail RUN_ID
-servertool runner notify RUN_ID
-servertool runner notify --test you@example.com
-```
-
-## Safe Smoke Spec
-
-Two smoke specs are tracked in the repository:
-
-- `spec.smoke.json`: prints a single smoke line
-- `spec.smoke.train.json`: runs `examples/smoke_train.py` and writes `outputs/metrics.jsonl`, `outputs/summary.json`, and `ckpts/last.ckpt`
-
-The training-oriented smoke spec stays intentionally small so it is safer for controller-to-runner smoke tests:
+Run it from the repository root:
 
 ```bash
 servertool spec validate spec.smoke.train.json
 servertool run submit spec.smoke.train.json --dry-run
+servertool run submit spec.smoke.train.json
 ```
 
-## Common Workflow
-
-### 1. Review the request presets
+Then use the returned `RUN_ID`:
 
 ```bash
-servertool request guide
+servertool run status RUN_ID
+servertool run logs RUN_ID --follow
+servertool run fetch RUN_ID
 ```
 
-### 2. Request a recommended GPU node
+This smoke run writes small artifacts under `outputs/` and `ckpts/`, including `outputs/metrics.jsonl`, `outputs/summary.json`, and `ckpts/last.ckpt`.
 
-```bash
-servertool request medium
+## Configuration Model
+
+Default local files:
+
+```text
+~/.config/servertool/
+  lab.env
+  user.env
+  smtp.env
 ```
 
-### 3. Verify the allocated environment
+Precedence:
 
-```bash
-servertool status quick
-nvidia-smi
-echo $CUDA_VISIBLE_DEVICES
+```text
+environment > user.env > lab.env > built-in defaults
 ```
 
-### 4. Inspect active jobs
+Responsibilities:
 
-```bash
-servertool jobs
-servertool jobs who
-servertool jobs info JOBID
+- `lab.env`: lab-managed shared values such as remote host, shared roots, partitions, mirrors, and SMTP settings
+- `user.env`: member-managed values such as `workspace_name`, `member_id`, notify email, and local run cache
+- `smtp.env`: admin-only SMTP credentials
+
+Use `servertool config show` to inspect effective values and `servertool config path` to inspect file locations.
+
+Public-safe config templates live under `examples/config/`.
+
+## Structured Spec Model
+
+`servertool` uses a structured `spec.json` schema.
+
+Supported asset source types:
+
+- `assets.code.source`: `sync`
+- `assets.dataset.source`: `none | sync | shared_path`
+- `assets.env.source`: `none | shared_path | build | upload`
+- `assets.model.source`: `none | hub | shared_path | upload`
+
+Design rules:
+
+- use `shared_path` or `build` for environments whenever possible
+- use `hub` or `shared_path` for models whenever possible
+- keep `upload` as the fallback path
+- `shared_path` values must be absolute remote paths
+- `fetch.include` patterns are relative to the run root and control what `run fetch` pulls back locally
+- the runner injects shared cache and mirror variables such as `HF_HOME`, `HF_HUB_CACHE`, `MODELSCOPE_CACHE`, `PIP_CACHE_DIR`, `CONDA_PKGS_DIRS`, `PIP_INDEX_URL`, `PIP_EXTRA_INDEX_URL`, `HF_ENDPOINT`, and `MODELSCOPE_ENDPOINT`
+
+## Remote Layout
+
+Shared lab side:
+
+```text
+<shared_home>/trainhub/
+  .runner/
+    releases/<version>/servertool/
+    current -> releases/<version>
+  lab/
+    lab.env
+    smtp.env
+  envs/
+  models/
+  cache/
 ```
 
-### 5. Monitor shared disk usage
+Member side:
 
-```bash
-servertool disk show
-servertool disk detail
-servertool disk update
+```text
+<shared_home>/<workspace>/.servertool/
+  config.env
+  projects/<project>/runs/<run_id>/
 ```
 
-## Configuration
+## Safety Defaults
 
-`servertool` now supports a local per-account config file. Run this once after logging into a shared account:
+The CLI is member-scoped by default.
 
-```bash
-servertool config setup
-```
+- `run status`, `logs`, `fetch`, and `cleanup` only operate on the current member's runs by default
+- `run list` only shows local records for the current member by default
+- legacy shared-root runs are only accessible when a matching local run record exists
+- cleanup stays conservative and refuses non-terminal runs unless `--force` is passed
 
-This writes a local config file to `~/.config/servertool/config.env` by default. The CLI loads it automatically on future runs. Use environment variables only when you need to override that local file for automation.
+## FAQ
 
-Important: do not put passwords or SSH private keys into the config file. `servertool` only needs cluster metadata such as the shared account, shared home path, partitions, and auth URL.
+### The admin gave me `lab.env`. What do I do next?
 
-For the controller workflow, `servertool` also uses local runner/controller settings such as the remote host, remote root, local run cache, and SMTP paths. The runner-side SMTP credentials should live in a separate local secrets file such as `~/.config/servertool/smtp.env`.
+Put it at `~/.config/servertool/lab.env`, then run `servertool init` and `servertool doctor`.
 
-A sanitized `.env.example` is still included as a deployment template.
+### Why did `run fetch` pull back fewer files than I expected?
 
-| Variable | Purpose |
-|----------|---------|
-| `SERVERTOOL_SHARED_ACCOUNT` | Shared account name used in owner inference |
-| `SERVERTOOL_WORKSPACE_NAME` | Your personal workspace folder under the shared home |
-| `SERVERTOOL_SHARED_HOME` | Shared home root used for workdir ownership mapping |
-| `SERVERTOOL_AUTH_URL` | Authentication URL shown in network guidance |
-| `SERVERTOOL_NETWORK_PROBE_URL` | Public or internal URL used for connectivity probing |
-| `SERVERTOOL_A40_PARTITION` | Standard GPU partition name |
-| `SERVERTOOL_A6000_PARTITION` | Large GPU partition name |
-| `SERVERTOOL_A40_MAX_TIME` | Max wall time label for the standard GPU partition |
-| `SERVERTOOL_A6000_MAX_TIME` | Max wall time label for the large GPU partition |
-| `SERVERTOOL_DEFAULT_COMPUTE_HOST` | Internal host used for connectivity probing |
-| `SERVERTOOL_QUOTA_LIMIT` | Shared quota label |
-| `SERVERTOOL_CACHE_FILE` | Disk cache file path. Defaults to `~/.cache/servertool/disk-cache.json` |
-| `SERVERTOOL_TEST_OUTPUT_DIR` | Directory for temporary job test output |
-| `SERVERTOOL_INSTALL_PATH` | Installed CLI path used in cron examples |
-| `SERVERTOOL_CONFIG_FILE` | Override path for the local config file |
-| `SERVERTOOL_REMOTE_HOST` | Linux runner host used by controller commands |
-| `SERVERTOOL_REMOTE_USER` | SSH username for the runner host |
-| `SERVERTOOL_REMOTE_PORT` | SSH port for the runner host |
-| `SERVERTOOL_REMOTE_ROOT` | Remote trainhub root, usually `<shared_home>/trainhub` |
-| `SERVERTOOL_REMOTE_PYTHON` | Python executable on the runner host |
-| `SERVERTOOL_LOCAL_RUN_CACHE` | Local cache for submitted run records and fetched outputs |
-| `SERVERTOOL_NOTIFY_EMAIL_TO` | Default recipient copied into new specs |
-| `SERVERTOOL_NOTIFY_EMAIL_FROM` | Runner-side mail sender |
-| `SERVERTOOL_SMTP_HOST` | SMTP host for runner notifications |
-| `SERVERTOOL_SMTP_PORT` | SMTP port for runner notifications |
-| `SERVERTOOL_SMTP_USE_SSL` | Whether runner mail uses SSL |
-| `SERVERTOOL_SMTP_SECRETS_FILE` | Local and runner-side path to SMTP username/password |
+`run fetch` follows `fetch.include` from the run spec and remote `status.json`. Add the paths you need to `fetch.include`, then resubmit or fetch that run's tracked outputs.
 
-Compatibility note: `SERVERIP` and `SERVERUSERNAME` are also accepted as controller-side fallbacks for `SERVERTOOL_REMOTE_HOST` and `SERVERTOOL_REMOTE_USER`.
+### Can I use `servertool remote` or `servertool runner` directly?
 
-## Open Source Safety
+Treat them as internal interfaces. Normal workflows should stay on `init`, `doctor`, `spec`, `run`, and `admin`.
 
-This repository deliberately does not contain:
+### Why does a run say it belongs to another member?
 
-- production IP addresses
-- cluster passwords
-- private usernames tied to a real server
-- private authentication endpoints
+The CLI is member-scoped by default. Check `servertool config show` and confirm that your current `workspace_name` and `member_id` match the run you are trying to access.
 
-Use the local config file, environment variables, deployment scripts, or an ignored operator config file to inject private values outside source control.
+### Where can I see which config files are active?
 
-The default source tree contains no literal server IP addresses. Network checks use the configurable `SERVERTOOL_NETWORK_PROBE_URL` setting instead of a hardcoded endpoint.
+Run `servertool config path` for file locations and `servertool config show` for effective values.
 
 ## Development
 
-Validate the code locally with:
+Useful local checks:
 
 ```bash
 python3 -m compileall src
-python3 servertool help
 python3 -m unittest discover tests
+python3 -m build
 ```
 
-## Repository Layout
-
-```text
-servertool/
-├── .gitignore
-├── LICENSE
-├── pyproject.toml
-├── README.md
-├── README.zh-CN.md
-├── servertool
-├── src/
-│   └── servertool/
-│       ├── __init__.py
-│       ├── __main__.py
-│       ├── app.py
-│       ├── commands/
-│       ├── controller/
-│       ├── context.py
-│       ├── runner/
-│       ├── shared/
-│       ├── config.py
-│       ├── layout.py
-│       ├── notify_email.py
-│       ├── output.py
-│       ├── remote.py
-│       ├── runner_state.py
-│       ├── spec.py
-│       ├── system.py
-└── tests/
-```
-
-Internally the code is now split into `controller/`, `runner/`, and `shared/`, while keeping the public CLI name and command surface as a single `servertool` tool.
+The repository intentionally excludes real production endpoints, credentials, and private server details. Inject private values through local config files or environment variables outside source control.
